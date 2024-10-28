@@ -37,6 +37,7 @@ const (
 type WatcherWrapper interface {
 	Add(name string) error
 	Close() error
+	ErrorChannel() chan error
 	EventChannel() chan fsnotify.Event
 }
 
@@ -50,6 +51,10 @@ func (rw *RealWatcher) Add(name string) error {
 
 func (rw *RealWatcher) Close() error {
 	return rw.watcher.Close()
+}
+
+func (rw *RealWatcher) ErrorChannel() chan error {
+	return rw.watcher.Errors
 }
 
 func (rw *RealWatcher) EventChannel() chan fsnotify.Event {
@@ -126,6 +131,7 @@ func (bwu *BaseWorkUnit) Init(w *Workceptor, unitID string, workType string, fs 
 		if err == nil {
 			bwu.watcher = &RealWatcher{watcher: watcher}
 		} else {
+			bwu.w.nc.GetLogger().Info("fsnotify.NewWatcher returned %s", err)
 			bwu.watcher = nil
 		}
 	}
@@ -392,16 +398,20 @@ func (bwu *BaseWorkUnit) MonitorLocalStatus() {
 	var watcherEvents chan fsnotify.Event
 	watcherEvents = make(chan fsnotify.Event)
 
+	var watcherErrors chan error
+	watcherErrors = make(chan error)
+
 	if bwu.watcher != nil {
 		err := bwu.watcher.Add(statusFile)
 		if err == nil {
 			defer func() {
 				werr := bwu.watcher.Close()
 				if werr != nil {
-					bwu.w.nc.GetLogger().Error("Error closing %s: %s", statusFile, err)
+					bwu.w.nc.GetLogger().Error("Error in defer closing %s: %s", statusFile, err)
 				}
 			}()
 			watcherEvents = bwu.watcher.EventChannel()
+			watcherErrors = bwu.watcher.ErrorChannel()
 		} else {
 			werr := bwu.watcher.Close()
 			if werr != nil {
@@ -412,6 +422,7 @@ func (bwu *BaseWorkUnit) MonitorLocalStatus() {
 	}
 	fi, err := bwu.fs.Stat(statusFile)
 	if err != nil {
+		bwu.w.nc.GetLogger().Error("Error retrieving stat for %s: %s", statusFile, err)
 		fi = nil
 	}
 
@@ -424,7 +435,7 @@ loop:
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				err = bwu.Load()
 				if err != nil {
-					bwu.w.nc.GetLogger().Error("Error reading %s: %s", statusFile, err)
+					bwu.w.nc.GetLogger().Error("Watcher Events Error reading %s: %s", statusFile, err)
 				}
 			}
 		case <-time.After(time.Second):
@@ -433,9 +444,14 @@ loop:
 				fi = newFi
 				err = bwu.Load()
 				if err != nil {
-					bwu.w.nc.GetLogger().Error("Error reading %s: %s", statusFile, err)
+					bwu.w.nc.GetLogger().Error("Work unit load Error reading %s: %s", statusFile, err)
 				}
 			}
+		case err, ok := <-watcherErrors:
+			if !ok {
+				return
+			}
+			bwu.w.nc.GetLogger().Error("fsnotify Error reading %s: %s", statusFile, err)
 		}
 		complete := IsComplete(bwu.Status().State)
 		if complete {
