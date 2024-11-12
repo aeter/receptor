@@ -153,14 +153,25 @@ func (w *Workceptor) RegisterWorker(typeName string, newWorkerFunc NewWorkerFunc
 	return nil
 }
 
-func (w *Workceptor) generateUnitID(lock bool) (string, error) {
+func (w *Workceptor) generateUnitID(lock bool, workUnitID string) (string, error) {
 	if lock {
 		w.activeUnitsLock.RLock()
 		defer w.activeUnitsLock.RUnlock()
 	}
 	var ident string
 	for {
-		ident = randstr.RandomString(8)
+		if workUnitID == "" {
+			rstr := randstr.RandomString(8)
+			nid := w.nc.NodeID()
+			ident = fmt.Sprintf("%s%s", nid, rstr)
+		} else {
+			ident = workUnitID
+			unitdir := path.Join(w.dataDir, ident)
+			_, err := os.Stat(unitdir)
+			if err == nil {
+				return "", fmt.Errorf("workunit ID %s is already in use, cannot use the same workunit ID more than once", ident)
+			}
+		}
 		_, ok := w.activeUnits[ident]
 		if !ok {
 			unitdir := path.Join(w.dataDir, ident)
@@ -243,7 +254,7 @@ func (w *Workceptor) VerifySignature(signature string) error {
 }
 
 // AllocateUnit creates a new local work unit and generates an identifier for it.
-func (w *Workceptor) AllocateUnit(workTypeName string, params map[string]string) (WorkUnit, error) {
+func (w *Workceptor) AllocateUnit(workTypeName string, workUnitID string, params map[string]string) (WorkUnit, error) {
 	w.workTypesLock.RLock()
 	wt, ok := w.workTypes[workTypeName]
 	w.workTypesLock.RUnlock()
@@ -252,7 +263,7 @@ func (w *Workceptor) AllocateUnit(workTypeName string, params map[string]string)
 	}
 	w.activeUnitsLock.Lock()
 	defer w.activeUnitsLock.Unlock()
-	ident, err := w.generateUnitID(false)
+	ident, err := w.generateUnitID(false, workUnitID)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +281,7 @@ func (w *Workceptor) AllocateUnit(workTypeName string, params map[string]string)
 }
 
 // AllocateRemoteUnit creates a new remote work unit and generates a local identifier for it.
-func (w *Workceptor) AllocateRemoteUnit(remoteNode, remoteWorkType, tlsClient, ttl string, signWork bool, params map[string]string) (WorkUnit, error) {
+func (w *Workceptor) AllocateRemoteUnit(remoteNode, remoteWorkType, workUnitID string, tlsClient, ttl string, signWork bool, params map[string]string) (WorkUnit, error) {
 	if tlsClient != "" {
 		_, err := w.nc.GetClientTLSConfig(tlsClient, "testhost", netceptor.ExpectedHostnameTypeReceptor)
 		if err != nil {
@@ -288,7 +299,7 @@ func (w *Workceptor) AllocateRemoteUnit(remoteNode, remoteWorkType, tlsClient, t
 	if hasSecrets && tlsClient == "" {
 		return nil, fmt.Errorf("cannot send secrets over a non-TLS connection")
 	}
-	rw, err := w.AllocateUnit("remote", params)
+	rw, err := w.AllocateUnit("remote", workUnitID, params)
 	if err != nil {
 		return nil, err
 	}
