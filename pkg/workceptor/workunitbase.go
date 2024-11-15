@@ -432,12 +432,23 @@ loop:
 		case <-bwu.ctx.Done():
 			break loop
 		case event := <-watcherEvents:
-			if event.Has(fsnotify.Create) {
+			switch {
+			case event.Has(fsnotify.Create):
 				bwu.w.nc.GetLogger().Debug("Watcher Event create of %s", statusFile)
-			} else if event.Op&fsnotify.Write == fsnotify.Write {
+			case event.Op&fsnotify.Write == fsnotify.Write:
 				err = bwu.Load()
 				if err != nil {
 					bwu.w.nc.GetLogger().Error("Watcher Events Error reading %s: %s", statusFile, err)
+				}
+			case event.Op&fsnotify.Remove == fsnotify.Remove:
+				err = bwu.Load()
+				if err != nil {
+					bwu.w.nc.GetLogger().Debug("Watcher Events Remove reading %s: %s", statusFile, err)
+				}
+			case event.Op&fsnotify.Rename == fsnotify.Rename:
+				err = bwu.Load()
+				if err != nil {
+					bwu.w.nc.GetLogger().Debug("Watcher Events Rename reading %s: %s", statusFile, err)
 				}
 			}
 		case <-time.After(time.Second):
