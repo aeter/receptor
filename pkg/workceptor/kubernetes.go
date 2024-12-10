@@ -171,7 +171,7 @@ func (ku KubeAPIWrapper) NewFakeAlwaysRateLimiter() flowcontrol.RateLimiter {
 // It is instantiated in the NewkubeWorker function and available throughout the package.
 var KubeAPIWrapperInstance KubeAPIer
 
-var KubeAPIWrapperLock *sync.RWMutex
+var KubeAPIWrapperLock sync.Mutex
 
 // ErrPodCompleted is returned when pod has already completed before we could attach.
 var ErrPodCompleted = fmt.Errorf("pod ran to completion")
@@ -294,7 +294,7 @@ func (kw *KubeUnit) kubeLoggingNoReconnect(streamWait *sync.WaitGroup, stdout *S
 	}
 }
 
-func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout *STDoutWriter, stdinErr *error, stdoutErr *error) {
+func (kw *KubeUnit) KubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout *STDoutWriter, stdinErr *error, stdoutErr *error) {
 	// preferred method for k8s >= 1.23.14
 	defer streamWait.Done()
 	var sinceTime time.Time
@@ -420,7 +420,7 @@ func (kw *KubeUnit) kubeLoggingWithReconnect(streamWait *sync.WaitGroup, stdout 
 	}
 }
 
-func (kw *KubeUnit) createPod(env map[string]string) error {
+func (kw *KubeUnit) CreatePod(env map[string]string) error {
 	ked := kw.UnredactedStatus().ExtraData.(*KubeExtraData)
 	command, err := shlex.Split(ked.Command)
 	if err != nil {
@@ -522,7 +522,9 @@ func (kw *KubeUnit) createPod(env map[string]string) error {
 	})
 
 	// Wait for the pod to be running
+	KubeAPIWrapperLock.Lock()
 	fieldSelector := KubeAPIWrapperInstance.OneTermEqualSelector("metadata.name", kw.pod.Name).String()
+	KubeAPIWrapperLock.Unlock()
 	lw := &cache.ListWatch{
 		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 			options.FieldSelector = fieldSelector
@@ -544,7 +546,9 @@ func (kw *KubeUnit) createPod(env map[string]string) error {
 	}
 
 	time.Sleep(2 * time.Second)
+	KubeAPIWrapperLock.Lock()
 	ev, err := KubeAPIWrapperInstance.UntilWithSync(ctxPodReady, lw, &corev1.Pod{}, nil, podRunningAndReady())
+	KubeAPIWrapperLock.Unlock()
 	if ev == nil || ev.Object == nil {
 		return fmt.Errorf("did not return an event while watching pod for work unit %s", kw.ID())
 	}
@@ -621,7 +625,7 @@ func (kw *KubeUnit) runWorkUsingLogger() {
 	if podName == "" {
 		// create new pod if ked.PodName is empty
 		// TODO: add retry logic to make this more resilient to transient errors
-		if err := kw.createPod(nil); err != nil {
+		if err := kw.CreatePod(nil); err != nil {
 			if err != ErrPodCompleted {
 				errMsg := fmt.Sprintf("Error creating pod: %s", err)
 				kw.GetWorkceptor().nc.GetLogger().Error(errMsg) //nolint:govet
@@ -842,7 +846,7 @@ func (kw *KubeUnit) runWorkUsingLogger() {
 	stdoutWithReconnect := ShouldUseReconnect(kw)
 	if stdoutWithReconnect && stdoutErr == nil {
 		kw.GetWorkceptor().nc.GetLogger().Debug("streaming stdout with reconnect support")
-		go kw.kubeLoggingWithReconnect(&streamWait, stdout, &stdinErr, &stdoutErr)
+		go kw.KubeLoggingWithReconnect(&streamWait, stdout, &stdinErr, &stdoutErr)
 	} else {
 		kw.GetWorkceptor().nc.GetLogger().Debug("streaming stdout with no reconnect support")
 		go kw.kubeLoggingNoReconnect(&streamWait, stdout, &stdoutErr)
@@ -1062,7 +1066,7 @@ func (kw *KubeUnit) runWorkUsingTCP() {
 	}()
 
 	// Create the pod
-	err = kw.createPod(map[string]string{"RECEPTOR_HOST": listenHost, "RECEPTOR_PORT": listenPort})
+	err = kw.CreatePod(map[string]string{"RECEPTOR_HOST": listenHost, "RECEPTOR_PORT": listenPort})
 	if err != nil {
 		errMsg := fmt.Sprintf("Error creating pod: %s", err)
 		kw.UpdateBasicStatus(WorkStateFailed, errMsg, 0)
@@ -1574,11 +1578,11 @@ func (cfg KubeWorkerCfg) NewkubeWorker(bwu BaseWorkUnitForWorkUnit, w *Workcepto
 		}
 	}
 
-	KubeAPIWrapperLock = &sync.RWMutex{}
 	KubeAPIWrapperLock.Lock()
-	KubeAPIWrapperInstance = KubeAPIWrapper{}
 	if kawi != nil {
 		KubeAPIWrapperInstance = kawi
+	} else {
+		KubeAPIWrapperInstance = KubeAPIWrapper{}
 	}
 	KubeAPIWrapperLock.Unlock()
 
