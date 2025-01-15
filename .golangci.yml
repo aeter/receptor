@@ -75,6 +75,8 @@ linters-settings:
           - "k8s.io/api/core"
           - "k8s.io/apimachinery/pkg"
           - "k8s.io/client-go"
+          - "github.com/grafana/pyroscope-go"
+          - "github.com/sirupsen/logrus"
       tests:
         files:
           - "$test"
